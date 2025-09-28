@@ -1,0 +1,24 @@
+{
+  "file_name": "20250607Z.dat",
+  "file_path": "uploaded_files/winch",
+  "cruise": "SKQ202512S",
+  "delimiter": "\\s+",
+  "header_lines": 0,
+  "columns": [
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "Winch",
+    "Winch Mode",
+    "Wire_out",
+    "Calc Tension",
+    "Velocity",
+    "Alarm",
+    "Block Length",
+    "Tension"
+  ],
+  "datetime_code": "pd.to_datetime(df[['year', 'month', 'day', 'hour', 'minute', 'second']])"
+}
