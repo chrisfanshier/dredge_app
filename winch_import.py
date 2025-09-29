@@ -2,8 +2,9 @@ import os
 import json
 import pandas as pd
 import streamlit as st
+import sqlite3
 
-SAVE_DIR = "uploaded_files/winch"
+SAVE_DIR = "winch_data"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 st.title("Winch File Ingestion")
@@ -93,20 +94,30 @@ if uploaded_file is not None:
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        meta = {
-            "file_name": uploaded_file.name,
-            "file_path": SAVE_DIR,
-            "cruise": cruise_name,
+        # Prepare settings as JSON string
+        settings = json.dumps({
             "delimiter": delimiter,
             "header_lines": header_lines,
             "columns": colnames,
-            "datetime_code": datetime_code,  # Save the datetime parsing logic
-            "start_datetime": str(start_datetime),  # Save start datetime
-            "end_datetime": str(end_datetime)  # Save end datetime
-        }
+            "datetime_code": datetime_code
+        })
 
-        meta_path = file_path + ".meta.json"
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
+        # Insert metadata into winch_data table
+        conn = sqlite3.connect("dredge_remote.db")
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO winch_data (
+                file_name, file_path, cruise, start_time, end_time, settings
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            uploaded_file.name,
+            SAVE_DIR,
+            cruise_name,
+            str(start_datetime),
+            str(end_datetime),
+            settings
+        ))
+        conn.commit()
+        conn.close()
 
-        st.success(f"File and metadata saved!\n- {file_path}\n- {meta_path}")
+        st.success(f"File and metadata saved!\n- {file_path}\n- Database entry created.")

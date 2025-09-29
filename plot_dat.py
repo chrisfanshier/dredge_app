@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,76 +9,15 @@ import datetime
 import json
 import glob
 import os
+from utils import (
+    parse_staroddi_dat,
+    get_time_range,
+    parse_winch_dat,
+    parse_acc_file
+)
 
 # Force wide layout for Streamlit
 st.set_page_config(layout="wide")
-
-def parse_staroddi_dat(file):
-    # Read all lines with correct encoding
-    lines = file.read().decode("latin1").splitlines()
-    # Find where data starts (first line starting with a digit)
-    data_start = next(i for i, line in enumerate(lines) if line and line[0].isdigit())
-    # Set column names (adjust as needed)
-    colnames = ["index", "datetime", "temp", "press", "tilt_x", "tilt_y", "tilt_z", "EAL", "roll"]
-    # Read data into DataFrame
-    df = pd.read_csv(
-        io.StringIO('\n'.join(lines[data_start:])),  # <-- add comma here
-        sep="\t",
-        names=colnames,
-        header=None,
-        na_values="____",
-        decimal=",",
-    )
-    # Replace comma with dot in numeric columns and in datetime
-    df["datetime"] = df["datetime"].str.replace(",", ".", regex=False)
-    for col in ["temp", "press", "tilt_x", "tilt_y", "tilt_z", "EAL", "roll"]:
-        df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    # Parse datetime column
-    df["datetime"] = pd.to_datetime(df["datetime"], format="%d.%m.%Y %H:%M:%S.%f", errors="coerce")
-    return df
-
-def get_time_range(df):
-    return df["datetime"].min(), df["datetime"].max()
-
-def parse_winch_dat(file_path, meta):
-    colnames = meta["columns"]
-    delimiter = meta["delimiter"]
-    header_lines = meta["header_lines"]
-    df = pd.read_csv(
-        os.path.join(meta["file_path"], meta["file_name"]),
-        delimiter=delimiter,
-        skiprows=header_lines,
-        names=colnames,
-        header=None,
-        na_values="____"
-    )
-    # Create datetime column
-    df["datetime"] = pd.to_datetime(df[['year', 'month', 'day', 'hour', 'minute', 'second']])
-    return df
-
-def parse_acc_file(file):
-    lines = file.read().decode("latin1").splitlines()
-    # Find where data starts (first line starting with a digit)
-    data_start = next(i for i, line in enumerate(lines) if line and line[0].isdigit())
-    # The actual data columns (based on your sample)
-    colnames = ["rownum", "datetime", "g", "x_acc", "y_acc", "z_acc"]
-    # Read the data
-    df = pd.read_csv(
-        io.StringIO('\n'.join(lines[data_start:])),
-        sep="\t",
-        names=colnames,
-        header=None,
-        na_values="____"
-    )
-    # Fix the datetime: replace comma with dot for milliseconds
-    df["datetime"] = df["datetime"].astype(str).str.replace(",", ".", regex=False)
-    df["datetime"] = pd.to_datetime(df["datetime"], format="%d.%m.%Y %H:%M:%S.%f", errors="coerce")
-    # Replace comma with dot in all numeric columns and convert
-    for col in ["g", "x_acc", "y_acc", "z_acc"]:
-        df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
 
 st.title("Parse Plot and Offset for Staroddi data and Winch Data")
 
@@ -85,56 +25,100 @@ col1, col2 = st.columns([1,2])
 
 with col1:
     with st.expander("Main Data, ACC & Winch Selection", expanded=True):
-        dat_file = st.file_uploader("Select a .dat file", type=["dat"])
-        acc_file = st.file_uploader("Select an .acc file", type=["acc"])
+        import sqlite3
+        # Query sensor_data for available cast_ids
+        conn = sqlite3.connect('dredge_remote.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT cast_id FROM sensor_data')
+        cast_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        selected_cast_id = st.selectbox("Select Cast ID", cast_ids)
+
+        # Query sensor_data for files for selected cast_id
+        conn = sqlite3.connect('dredge_remote.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT file_name, file_path FROM sensor_data WHERE cast_id=?', (selected_cast_id,))
+        files = cursor.fetchall()
+        conn.close()
+
+        # Separate .dat and .acc files
+        dat_files = [f for f in files if f[0].lower().endswith('.dat')]
+        acc_files = [f for f in files if f[0].lower().endswith('.acc')]
+
+        selected_dat_file = st.selectbox("Select .DAT file", [f[0] for f in dat_files]) if dat_files else None
+        selected_acc_file = st.selectbox("Select .ACC file", [f[0] for f in acc_files]) if acc_files else None
+
         df = None
         acc_df = None
         winch_df = None
         winch_meta = None
         selected_winch = None
-        if dat_file:
-            df = parse_staroddi_dat(dat_file)
+
+        # Load selected .DAT file
+
+        if selected_dat_file:
+            dat_file_path = next(f[1] for f in dat_files if f[0] == selected_dat_file)
+            # If file_path is just 'sensor_data', join with file name
+            full_dat_path = os.path.join(dat_file_path, selected_dat_file) if os.path.isdir(dat_file_path) else os.path.join('sensor_data', selected_dat_file)
+            if not os.path.isfile(full_dat_path):
+                # Try fallback to sensor_data directory
+                full_dat_path = os.path.join('sensor_data', selected_dat_file)
+            with open(full_dat_path, 'rb') as dat_file:
+                df = parse_staroddi_dat(dat_file)
             st.write("Parsed Data Preview:", df.head())
             min_dt, max_dt = get_time_range(df)
             st.write(f"Main file time range: {min_dt} to {max_dt}")
-        if acc_file:
-            acc_df = parse_acc_file(acc_file)
+
+        # Load selected .ACC file
+        if selected_acc_file:
+            acc_file_path = next(f[1] for f in acc_files if f[0] == selected_acc_file)
+            full_acc_path = os.path.join(acc_file_path, selected_acc_file) if os.path.isdir(acc_file_path) else os.path.join('sensor_data', selected_acc_file)
+            if not os.path.isfile(full_acc_path):
+                full_acc_path = os.path.join('sensor_data', selected_acc_file)
+            with open(full_acc_path, 'rb') as acc_file:
+                acc_df = parse_acc_file(acc_file)
             st.write("Parsed ACC Data Preview:", acc_df.head())
         # Winch metadata selection logic
         if df is not None:
             min_dt, max_dt = get_time_range(df)
-            meta_folder = st.text_input("Winch metadata folder (JSONs):", value="./winch_metadata")
-            if meta_folder and os.path.isdir(meta_folder):
-                meta_files = glob.glob(os.path.join(meta_folder, "*.json"))
-                matches = []
-                meta_dict = {}
-                for meta_path in meta_files:
-                    with open(meta_path, "r") as f:
-                        meta = json.load(f)
-                    try:
-                        winch_start = pd.to_datetime(meta["start_datetime"])
-                        winch_end = pd.to_datetime(meta["end_datetime"])
-                        # Check for any overlap
-                        if (winch_start <= max_dt) and (winch_end >= min_dt):
-                            matches.append(meta["file_name"])
-                            meta_dict[meta["file_name"]] = meta
-                    except Exception:
-                        continue
-                if matches:
-                    selected_winches = st.multiselect("Select overlapping winch files:", matches, default=matches)
-                    winch_dfs = []
-                    for winch_file in selected_winches:
-                        winch_meta = meta_dict[winch_file]
-                        winch_dfs.append(parse_winch_dat(winch_file, winch_meta))
-                    if winch_dfs:
-                        winch_df = pd.concat(winch_dfs, ignore_index=True)
-                        st.success(f"Loaded {len(selected_winches)} winch file(s), total rows: {len(winch_df)}.")
-                    else:
-                        winch_df = None
+            # Query winch_data table for overlapping winch files
+            import sqlite3
+            conn = sqlite3.connect('dredge_remote.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT file_name, file_path, start_time, end_time, settings FROM winch_data')
+            winch_rows = cursor.fetchall()
+            conn.close()
+
+            matches = []
+            meta_dict = {}
+            for row in winch_rows:
+                file_name, file_path, start_time, end_time, settings_json = row
+                try:
+                    winch_start = pd.to_datetime(start_time)
+                    winch_end = pd.to_datetime(end_time)
+                    # Check for any overlap
+                    if (winch_start <= max_dt) and (winch_end >= min_dt):
+                        matches.append(file_name)
+                        meta = json.loads(settings_json)
+                        meta['file_name'] = file_name
+                        meta['file_path'] = file_path
+                        meta_dict[file_name] = meta
+                except Exception:
+                    continue
+            if matches:
+                selected_winches = st.multiselect("Select overlapping winch files:", matches, default=matches)
+                winch_dfs = []
+                for winch_file in selected_winches:
+                    winch_meta = meta_dict[winch_file]
+                    winch_dfs.append(parse_winch_dat(winch_file, winch_meta))
+                if winch_dfs:
+                    winch_df = pd.concat(winch_dfs, ignore_index=True)
+                    st.success(f"Loaded {len(selected_winches)} winch file(s), total rows: {len(winch_df)}.")
                 else:
-                    st.warning("No matching winch files found in metadata folder.")
+                    winch_df = None
             else:
-                st.info("Enter a valid folder path containing winch JSON metadata files.")
+                st.warning("No matching winch files found in database.")
 
     with st.expander("Plot Controls", expanded=True):
         if df is not None or acc_df is not None:
